@@ -1,0 +1,6 @@
+Metric,MLP,SVM
+Accuracy,0.9795,0.9788
+Precision (macro),0.9815,0.9851
+Recall (macro),0.9813,0.976
+F1-score (macro),0.9812,0.9802
+F1-score (weighted),0.9795,0.9787
