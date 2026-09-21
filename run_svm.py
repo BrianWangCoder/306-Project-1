@@ -1,19 +1,13 @@
 # %% [markdown]
-# # COMPSYS 306 Project 1 - SVM for traffic sign recognition (no PCA)
+# # COMPSYS 306 Project 1 - SVM for traffic sign recognition
 #
 # Structured like Lab 4 (Steps 3-5, Tasks 4-8): the same folder loading as the
 # MLP notebook, a comparison of the linear / polynomial / RBF kernels, a grid
 # search over the hyperparameters, then a confusion matrix with the evaluation
 # metrics calculated manually.
 #
-# This version trains the SVM directly on all 1024 standardised pixel features,
-# with no dimensionality reduction, so both models see an identical feature
-# vector. Steps 1-5 are identical to the MLP notebook on purpose - the same seed
-# gives the same split, so the two models are compared on exactly the same data.
-#
-# **Runtime:** roughly 10x slower than the PCA version, since SVM kernel
-# evaluations scale with the number of features. Expect a few minutes for the
-# grid search and under ten minutes for the final fit.
+# Steps 1-4 are identical to the MLP notebook on purpose - the same seed gives
+# the same split, so the two models are compared on exactly the same data.
 
 # %%
 # Importing the necessary libraries
@@ -29,6 +23,7 @@ from PIL import Image
 from sklearn import svm
 from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
 from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
 
 # ---- configuration (keep these identical to the MLP notebook) ----
@@ -41,7 +36,9 @@ VAL_SIZE   = 0.15
 SEED       = 42
 
 # ---- SVM-specific settings ----
-SEARCH_SUBSET = 5000   # samples used for the grid search (0 = use all of them)
+USE_PCA        = True   # reduce 1024 pixels to N components before training
+PCA_COMPONENTS = 100
+SEARCH_SUBSET  = 5000   # samples used for the grid search (0 = use all of them)
 
 np.random.seed(SEED)
 
@@ -94,7 +91,7 @@ print("First five classes:", class_names[:5])
 #
 # An SVM takes one feature vector per sample, so each IMG_SIZE x IMG_SIZE image
 # becomes a single row of pixel values - the same `.flatten()` step used on the
-# Cars / Ice cream cone / Cricket ball database in Lab 4. (The MLP does this
+# Cars / Ice cream cone / Cricket ball database in Lab 4. (The MLP did this
 # inside the network with `nn.Flatten()`; here it has to be done beforehand.)
 
 # %%
@@ -144,24 +141,42 @@ print("Training set mean after scaling:", X_train.mean().round(4))
 print("Training set std  after scaling:", X_train.std().round(4))
 
 # %% [markdown]
-# **Step 6: Feature dimensionality**
+# **Step 6: Dimensionality reduction with PCA (optional but recommended)**
 #
-# No dimensionality reduction is applied: the SVM is trained on all
-# 32 x 32 = 1024 standardised pixel features, exactly the same input the MLP
-# receives. This keeps the two models directly comparable, at the cost of
-# training time - an SVM's kernel evaluations scale with the number of features,
-# so training takes roughly ten times longer than it would on 100 components.
+# PCA projects the 1024 pixel features onto the directions of greatest variance
+# and keeps only the first N of them (Topic 8). Two reasons to use it here:
 #
-# One useful consequence of standardising and *not* projecting: every feature
-# now has unit variance, so scikit-learn's default `gamma='scale'` evaluates to
-# 1 / (1024 x 1) which is approximately 0.001 - a sensible value. The grid below
-# brackets it.
+# 1. Training an SVM scales badly with both the number of samples and the number
+#    of features. On raw pixels the grid search can take hours; on 100 components
+#    it takes minutes.
+# 2. Neighbouring pixels are highly correlated, so most of those 1024 features
+#    are redundant.
+#
+# The printed explained variance says how much information was kept. Set
+# `USE_PCA = False` to train on the raw pixels instead and compare.
 
 # %%
-n_features = X_train.shape[1]
-print(f"Training the SVM on all {n_features} features (no reduction)")
-print(f"Default gamma='scale' would be approximately "
-      f"{1 / (n_features * X_train.var()):.5f}")
+if USE_PCA:
+    n_components = min(PCA_COMPONENTS, X_train.shape[1], X_train.shape[0] - 1)
+    pca = PCA(n_components=n_components, random_state=SEED)
+    X_train = pca.fit_transform(X_train)
+    X_val = pca.transform(X_val)
+    X_test = pca.transform(X_test)
+    print(f"Reduced to {n_components} components, "
+          f"retaining {pca.explained_variance_ratio_.sum():.1%} of the variance")
+
+    plt.figure(figsize=(6, 4))
+    plt.plot(np.cumsum(pca.explained_variance_ratio_))
+    plt.xlabel('Number of principal components')
+    plt.ylabel('Cumulative explained variance')
+    plt.title('PCA explained variance')
+    plt.grid(True)
+    plt.show()
+else:
+    pca = None
+    print("PCA disabled - training on raw pixel features")
+
+print("Final feature matrix:", X_train.shape)
 
 # %% [markdown]
 # **Step 7: Comparing the three kernels (Lab 4 Tasks 4-6)**
@@ -205,7 +220,7 @@ plt.show()
 #
 # Grid search performs an exhaustive search over the specified parameter values,
 # as introduced in Lab 4 Step 5. `cv=3` means 3-fold cross-validation: the
-# training subset is split into three folds and each takes a turn as the
+# training subset is split into three folds and each one takes a turn as the
 # validation fold, so the score is averaged over three runs (Topic 7).
 #
 # * **C** is the regularisation parameter. A small C allows more slack variables
@@ -213,23 +228,16 @@ plt.show()
 #   to classify the training data correctly, risking overfitting.
 # * **gamma** controls how far the influence of a single training sample reaches
 #   in the RBF kernel. A small gamma gives a smooth boundary, a large gamma a
-#   tight one that can overfit. It does not apply to the linear kernel.
-#
-# The linear kernel is included in the grid so that all three kernels are scored
-# under identical conditions, rather than only in the fixed-C comparison above.
+#   tight one that can overfit.
 #
 # This is the slowest cell in the notebook.
 
 # %%
-param_grid = [
-    {'kernel': ['rbf'],    'C': [0.1, 1, 10], 'gamma': [0.0001, 0.001, 0.01]},
-    {'kernel': ['poly'],   'C': [0.1, 1, 10], 'gamma': [0.0001, 0.001, 0.01]},
-    {'kernel': ['linear'], 'C': [0.1, 1, 10]},
-]
+param_grid = {'C': [0.1, 1, 10], 'gamma': [0.0001, 0.001, 0.01], 'kernel': ['rbf', 'poly']}
 
 svc = svm.SVC()
 print("The training of the model is started, please wait for a while as it may "
-      "take several minutes to complete")
+      "take a few minutes to complete")
 
 start = time.time()
 model = GridSearchCV(svc, param_grid, cv=3, n_jobs=-1, verbose=2)
@@ -238,6 +246,7 @@ print(f'\nThe model is trained. Grid search took {time.time() - start:.1f}s')
 print('Best parameters:', model.best_params_)
 print(f'Best cross-validation accuracy: {model.best_score_*100:.2f}%')
 
+# A readable summary of the whole grid, useful for the report
 results_df = pd.DataFrame(model.cv_results_)[
     ['param_C', 'param_gamma', 'param_kernel', 'mean_test_score', 'std_test_score']
 ].sort_values('mean_test_score', ascending=False)
@@ -258,9 +267,8 @@ print(f'Validation accuracy of the tuned model: {val_acc*100:.2f}%')
 # **Step 10: Training the final model**
 #
 # The winning parameters are retrained on the training **and** validation data
-# together, so the final model uses as much data as possible. The testing set is
-# still untouched at this point. This is the longest single operation in the
-# notebook - expect several minutes.
+# together, so the final model uses as much data as possible. The testing set
+# is still untouched at this point.
 
 # %%
 X_full = np.vstack([X_train, X_val])
@@ -280,15 +288,11 @@ print(f'Number of support vectors: {int(final_model.n_support_.sum())} '
 # **Step 11: Prediction and accuracy on the testing set**
 
 # %%
-start = time.time()
 y_pred = final_model.predict(X_test)
-predict_time = time.time() - start
 
 print("The predicted data is :", y_pred[:20])
 print("The actual data is    :", np.array(y_test[:20]))
 print(f"\nThe model is {accuracy_score(y_pred, y_test)*100:.2f}% accurate")
-print(f"Prediction of {len(y_test)} samples took {predict_time:.1f}s "
-      f"({1000*predict_time/len(y_test):.2f} ms per image)")
 
 # %% [markdown]
 # **Step 12: Classification report**
@@ -369,6 +373,7 @@ print(f"  Precision = TP/(TP+FP) = {TP}/{TP+FP} = {precision:.4f}")
 print(f"  Recall    = TP/(TP+FN) = {TP}/{TP+FN} = {recall:.4f}")
 print(f"  F1 score  = 2*P*R/(P+R) = {f1:.4f}")
 
+# Repeat for every class and average -> the macro averages
 precisions, recalls, f1s = [], [], []
 for k in range(n_classes):
     tp = cm[k, k]
@@ -386,17 +391,18 @@ print(f"  Precision (macro)  = {np.mean(precisions):.4f}")
 print(f"  Recall    (macro)  = {np.mean(recalls):.4f}")
 print(f"  F1-score  (macro)  = {np.mean(f1s):.4f}")
 
+# sanity check against sklearn
 print("\nsklearn accuracy check:", accuracy_score(y_test, y_pred))
 
 # %% [markdown]
 # **Step 15: Saving the model with pickle**
 #
-# The scaler is saved alongside the model, because a new image must be scaled
-# with exactly the same mean and standard deviation before the model can
-# classify it.
+# The scaler and the PCA are saved alongside the model, because a new image must
+# be scaled and projected with exactly the same transformations before the model
+# can classify it.
 
 # %%
-pickle.dump({'model': final_model, 'scaler': scaler,
+pickle.dump({'model': final_model, 'scaler': scaler, 'pca': pca,
              'categories': categories, 'class_names': class_names,
              'img_size': IMG_SIZE, 'color_mode': COLOR_MODE},
             open('svm_traffic_signs.p', 'wb'))
@@ -412,9 +418,8 @@ np.save('svm_true_labels.npy', y_test)
 # **Step 16: Comparing the MLP and the SVM**
 #
 # Run the MLP notebook first so `mlp_predictions.npy` exists. Both models were
-# trained and evaluated on identical splits with identical features, so these
-# numbers are directly comparable - this table is the comparative analysis the
-# report asks for.
+# trained and evaluated on identical splits, so these numbers are directly
+# comparable - this table is the comparative analysis the report asks for.
 
 # %%
 from sklearn.metrics import precision_score, recall_score, f1_score
@@ -442,6 +447,7 @@ try:
     print(comparison.round(4).to_string(index=False))
     comparison.round(4).to_csv('model_comparison.csv', index=False)
 
+    # Where do the two models disagree?
     both_right = ((mlp_pred == y_test) & (y_pred == y_test)).sum()
     only_mlp = ((mlp_pred == y_test) & (y_pred != y_test)).sum()
     only_svm = ((mlp_pred != y_test) & (y_pred == y_test)).sum()
